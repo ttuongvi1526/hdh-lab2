@@ -484,3 +484,29 @@ ismapped(pagetable_t pagetable, uint64 va)
   }
   return 0;
 }
+
+void vmprint_rec(pagetable_t pagetable, int level) {
+    for (int i = 0; i < 512; i++) {
+        pte_t pte = pagetable[i];
+
+        if (pte & PTE_V) {
+            uint64 pa = PTE2PA(pte);
+
+            // indent theo level
+            for (int j = 0; j < level; j++) {
+                printf(" ..");
+            }
+            printf("%d: pte %p pa %p\n", i, (void *)pte, (void *)pa);
+
+            // nếu không phải leaf → đi xuống level tiếp
+            if ((pte & (PTE_R | PTE_W | PTE_X)) == 0) {
+                vmprint_rec((pagetable_t)pa, level + 1);
+            }
+        }
+    }
+}
+
+void vmprint(pagetable_t pagetable) {
+    printf("page table %p\n", pagetable);
+    vmprint_rec(pagetable, 1);
+}
