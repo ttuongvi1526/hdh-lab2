@@ -406,37 +406,92 @@ static uint
 bmap(struct inode *ip, uint bn)
 {
   uint addr, *a;
-  struct buf *bp;
+  struct buf *bp, *bp1;
 
+  // 1. DIRECT BLOCK
   if(bn < NDIRECT){
     if((addr = ip->addrs[bn]) == 0){
-      addr = balloc(ip->dev);
+      addr = balloc(ip->dev); 
       if(addr == 0)
         return 0;
       ip->addrs[bn] = addr;
     }
     return addr;
   }
+
   bn -= NDIRECT;
 
+  // 2. SINGLE INDIRECT
   if(bn < NINDIRECT){
-    // Load indirect block, allocating if necessary.
+
     if((addr = ip->addrs[NDIRECT]) == 0){
       addr = balloc(ip->dev);
       if(addr == 0)
         return 0;
       ip->addrs[NDIRECT] = addr;
     }
+
     bp = bread(ip->dev, addr);
     a = (uint*)bp->data;
+
     if((addr = a[bn]) == 0){
       addr = balloc(ip->dev);
       if(addr){
         a[bn] = addr;
-        log_write(bp);
+        log_write(bp); 
       }
     }
+
     brelse(bp);
+    return addr;
+  }
+
+  bn -= NINDIRECT;
+
+  // 3. DOUBLE INDIRECT 
+  if(bn < NINDIRECT * NINDIRECT){
+
+    if((addr = ip->addrs[NDIRECT+1]) == 0){
+      addr = balloc(ip->dev);
+      if(addr == 0)
+        return 0;
+      ip->addrs[NDIRECT+1] = addr;
+    }
+
+    // đọc block cấp 1
+    bp = bread(ip->dev, addr);
+    a = (uint*)bp->data;
+
+    uint bn1 = bn / NINDIRECT; 
+    uint bn2 = bn % NINDIRECT; 
+
+    // nếu block cấp 2 chưa tồn tại → cấp phát
+    if((addr = a[bn1]) == 0){
+      addr = balloc(ip->dev);
+      if(addr == 0){
+        brelse(bp);
+        return 0;
+      }
+      a[bn1] = addr;
+      log_write(bp);
+    }
+
+    brelse(bp);
+
+    // đọc block cấp 2
+    bp1 = bread(ip->dev, addr);
+    a = (uint*)bp1->data;
+
+    // cấp phát block data nếu chưa có
+    if((addr = a[bn2]) == 0){
+      addr = balloc(ip->dev);
+      if(addr){
+        a[bn2] = addr;
+        log_write(bp1);
+      }
+    }
+
+    brelse(bp1);
     return addr;
   }
 
@@ -448,10 +503,11 @@ bmap(struct inode *ip, uint bn)
 void
 itrunc(struct inode *ip)
 {
-  int i, j;
-  struct buf *bp;
-  uint *a;
+  int i, j, k;
+  struct buf *bp, *bp1;
+  uint *a, *a1;
 
+  // 1. FREE DIRECT BLOCK
   for(i = 0; i < NDIRECT; i++){
     if(ip->addrs[i]){
       bfree(ip->dev, ip->addrs[i]);
@@ -459,16 +515,46 @@ itrunc(struct inode *ip)
     }
   }
 
+  // 2. FREE SINGLE INDIRECT
   if(ip->addrs[NDIRECT]){
     bp = bread(ip->dev, ip->addrs[NDIRECT]);
     a = (uint*)bp->data;
+
     for(j = 0; j < NINDIRECT; j++){
       if(a[j])
         bfree(ip->dev, a[j]);
     }
+
     brelse(bp);
     bfree(ip->dev, ip->addrs[NDIRECT]);
     ip->addrs[NDIRECT] = 0;
+  }
+
+  // 3. FREE DOUBLE INDIRECT 
+  if(ip->addrs[NDIRECT+1]){
+    bp = bread(ip->dev, ip->addrs[NDIRECT+1]);
+    a = (uint*)bp->data;
+
+    for(j = 0; j < NINDIRECT; j++){
+      if(a[j]){
+        // đọc block cấp 2
+        bp1 = bread(ip->dev, a[j]);
+        a1 = (uint*)bp1->data;
+
+        // free các block data
+        for(k = 0; k < NINDIRECT; k++){
+          if(a1[k])
+            bfree(ip->dev, a1[k]);
+        }
+
+        brelse(bp1);
+        bfree(ip->dev, a[j]); // free block cấp 2
+      }
+    }
+
+    brelse(bp);
+    bfree(ip->dev, ip->addrs[NDIRECT+1]); // free block cấp 1
+    ip->addrs[NDIRECT+1] = 0;
   }
 
   ip->size = 0;
